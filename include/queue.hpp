@@ -1,9 +1,14 @@
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
+
+const unsigned long QUEUE_EMPTY_MARKER = SIZE_MAX;
+
 template <typename T> struct Slot {
   T data;
   std::atomic<std::size_t> seq;
@@ -16,68 +21,76 @@ template <typename T> class Queue {
 
 public:
   Queue(Slot<T> *slot_begin, std::size_t len,
-        std::atomic<std::size_t> *last_committed_slot) {
-    this->slot_begin_ = slot_begin;
-    this->len_mask_ = len - 1;
-    this->last_committed_slot_ = last_committed_slot;
+        std::atomic<std::size_t> *last_committed_slot)
+      : slot_begin_(slot_begin), last_committed_slot_(last_committed_slot) {
+    static_assert(std::is_trivially_copyable_v<T>,
+                  "T must be trivially copyable");
+    assert(((len & (len - 1)) == 0) && "Len must be a power of two");
+    len_mask_ = len - 1;
   };
   Queue(std::size_t len) {
-    this->slot_begin_ = (Slot<T> *)malloc(len * sizeof(Slot<T>));
-    if (this->slot_begin_ != nullptr) {
-      memset(this->slot_begin_, 0, len * sizeof(Slot<T>));
+    assert(((len & (len - 1)) == 0) && "Len must be a power of two");
+    slot_begin_ = (Slot<T> *)malloc(len * sizeof(Slot<T>));
+    if (slot_begin_ != nullptr) {
+      memset(slot_begin_, 0, len * sizeof(Slot<T>));
     }
-    this->len_mask_ = len - 1;
-    this->last_committed_slot_ =
+    len_mask_ = len - 1;
+    last_committed_slot_ =
         (std::atomic<std::size_t> *)malloc(sizeof(std::atomic<std::size_t>));
-    this->last_committed_slot_->store(SIZE_MAX);
+    last_committed_slot_->store(QUEUE_EMPTY_MARKER);
   };
-  Slot<T> *get_slot_at(std::size_t idx) { return (this->slot_begin_ + idx); };
+  Slot<T> *get_slot_at(std::size_t idx) { return (slot_begin_ + idx); };
   std::size_t get_last_committed_slot() {
-    return (this->last_committed_slot_)->load(std::memory_order_acquire);
+    return (last_committed_slot_)->load(std::memory_order_acquire);
   };
   void set_last_committed_slot(std::size_t slot) {
-    this->last_committed_slot_->store(slot, std::memory_order_release);
+    last_committed_slot_->store(slot, std::memory_order_release);
   };
 
-  const std::size_t get_len_mask() { return this->len_mask_; }
+  std::size_t get_len_mask() { return len_mask_; }
 };
 
 template <typename T> class BroadcastWriter {
   Queue<T> queue_;
-  std::atomic<std::size_t> seq_;
+  std::size_t seq_;
 
 public:
   BroadcastWriter(Queue<T> queue) : queue_(queue) {
     std::size_t last_slot_idx = queue.get_last_committed_slot();
+    if (last_slot_idx == QUEUE_EMPTY_MARKER) {
+      seq_ = 0;
+      return;
+    }
     Slot<T> *slot = queue.get_slot_at(last_slot_idx);
-    this->seq_ = (slot->seq.load(std::memory_order_acquire)) + 1;
+    seq_ = (slot->seq.load(std::memory_order_acquire)) + 1;
   };
   T *get_next_buffer() {
-    auto next_idx = (this->queue_.get_last_committed_slot() + 1) &
-                    (this->queue_.get_len_mask());
-    auto next_slot = this->queue_.get_slot_at(next_idx);
+    auto next_idx =
+        (queue_.get_last_committed_slot() + 1) & (queue_.get_len_mask());
+    auto next_slot = queue_.get_slot_at(next_idx);
 
-    if (this->seq_ - next_slot->seq.load(std::memory_order_relaxed) ==
-        this->queue_.get_len_mask() + 1) {
+    if (seq_ - next_slot->seq.load(std::memory_order_relaxed) ==
+        queue_.get_len_mask() + 1) {
       next_slot->data.~T();
     }
 
     return &next_slot->data;
   };
   void commit_next_slot() {
-    auto next_idx = (this->queue_.get_last_committed_slot() + 1) &
-                    (this->queue_.get_len_mask());
-    auto next_slot = this->queue_.get_slot_at(next_idx);
+    auto next_idx =
+        (queue_.get_last_committed_slot() + 1) & (queue_.get_len_mask());
+    auto next_slot = queue_.get_slot_at(next_idx);
 
-    next_slot->seq.store(++this->seq_, std::memory_order_release);
-    this->queue_.set_last_committed_slot(next_idx);
+    next_slot->seq.store(++seq_, std::memory_order_release);
+    queue_.set_last_committed_slot(next_idx);
   }
   void write_value(T data) {
-    auto buffer = this->get_next_buffer();
+    auto buffer = get_next_buffer();
     *buffer = std::move(data);
-    this->commit_next_slot();
+    commit_next_slot();
   };
-  BroadcastWriter(BroadcastWriter &br) = delete;
+  BroadcastWriter(const BroadcastWriter &bw) = delete;
+  BroadcastWriter &operator=(const BroadcastWriter &) = delete;
 };
 
 template <typename T> class BroadcastReader {
@@ -88,16 +101,16 @@ template <typename T> class BroadcastReader {
 public:
   BroadcastReader(Queue<T> queue) : queue_(queue) {
     auto last_slot = queue.get_last_committed_slot();
-    this->seq_ = 0;
-    this->cursor_ = last_slot == SIZE_MAX ? 0 : last_slot;
+    seq_ = 0;
+    cursor_ = last_slot == QUEUE_EMPTY_MARKER ? 0 : last_slot;
   }
   T *try_read() {
-    auto slot = this->queue_.get_slot_at(this->cursor_);
+    auto slot = queue_.get_slot_at(cursor_);
     auto slot_seq = slot->seq.load(std::memory_order_acquire);
 
-    if (slot_seq > this->seq_) {
-      this->seq_ = slot_seq;
-      this->cursor_ = (this->cursor_ + 1) & (this->queue_.get_len_mask());
+    if (slot_seq > seq_) {
+      seq_ = slot_seq;
+      cursor_ = (cursor_ + 1) & (queue_.get_len_mask());
 
       return &slot->data;
     }
@@ -105,5 +118,6 @@ public:
     return nullptr;
   }
 
-  BroadcastReader(BroadcastReader &br) = delete;
+  BroadcastReader(const BroadcastReader &br) = delete;
+  BroadcastReader &operator=(const BroadcastReader &) = delete;
 };
