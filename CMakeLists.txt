@@ -7,7 +7,7 @@ target_include_directories(shmfeeder INTERFACE
     include
 )
 
-target_compile_features(shmfeeder INTERFACE cxx_std_17)
+target_compile_features(shmfeeder INTERFACE cxx_std_23)
 
 # Option to build examples, OFF by default
 option(SHMFEEDER_BUILD_EXAMPLES "Build examples" OFF)

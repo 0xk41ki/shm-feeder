@@ -1,4 +1,5 @@
 #include "queue.hpp"
+#include "producer.hpp"
 #include <iostream>
 #include <mutex>
 #include <thread>
