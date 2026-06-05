@@ -1,0 +1,4 @@
+- Introduce an Error type and define different failure modes
+- Return this error type from public facing types, not just int.
+- Move internal helper functions from producer to .cpp files.
+- Add consumer.
