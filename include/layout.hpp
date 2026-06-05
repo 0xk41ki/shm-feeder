@@ -39,6 +39,6 @@ public:
 };
 
 struct ShmQueue {
-  ShmHeader heaeder;
+  ShmHeader header;
   ProducerHeartbeat producer_heartbeat;
 };

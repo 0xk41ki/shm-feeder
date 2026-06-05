@@ -92,6 +92,8 @@ public:
   };
   BroadcastWriter(const BroadcastWriter &bw) = delete;
   BroadcastWriter &operator=(const BroadcastWriter &) = delete;
+  BroadcastWriter(BroadcastWriter &&) = default;
+  BroadcastWriter &operator=(BroadcastWriter &&) = default;
 };
 
 template <typename T> class BroadcastReader {
