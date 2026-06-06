@@ -90,7 +90,7 @@ public:
     *buffer = std::move(data);
     commit_next_slot();
   };
-  BroadcastWriter(const BroadcastWriter &bw) = delete;
+  BroadcastWriter(const BroadcastWriter &) = delete;
   BroadcastWriter &operator=(const BroadcastWriter &) = delete;
   BroadcastWriter(BroadcastWriter &&) = default;
   BroadcastWriter &operator=(BroadcastWriter &&) = default;
@@ -121,6 +121,8 @@ public:
     return nullptr;
   }
 
-  BroadcastReader(const BroadcastReader &br) = delete;
+  BroadcastReader(const BroadcastReader &) = delete;
   BroadcastReader &operator=(const BroadcastReader &) = delete;
+  BroadcastReader(BroadcastReader &&) = default;
+  BroadcastReader &operator=(BroadcastReader &&) = default;
 };
