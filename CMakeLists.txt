@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(shmfeeder)
+project(shmfeeder VERSION 1.0.0)
 
 add_library(shmfeeder INTERFACE)
 
