@@ -7,8 +7,8 @@
 
 std::uint64_t now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::system_clock::now().time_since_epoch()
-  ).count();
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
 
 int main() {
@@ -19,8 +19,7 @@ int main() {
                           .build<std::uint64_t>(now_ms());
 
   if (!queue_result.has_value()) {
-    std::cout << "failed to create queue: " << queue_result.error()
-              << std::endl;
+    std::cout << "failed to create queue:" << queue_result.error() << std::endl;
     return 1;
   }
 
@@ -28,9 +27,10 @@ int main() {
   std::uint64_t i = 1;
   while (true) {
     std::cout << "writing " << i << std::endl;
-    queue.write(i+=1);
+    queue.write(i += 1);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    if (i%5 == 0) queue.update_heartbeat(now_ms());
+    if (i % 5 == 0)
+      queue.update_heartbeat(now_ms());
   }
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "errors.hpp"
 #include "sys/mman.h"
 #include "unistd.h"
 #include <atomic>
@@ -18,19 +19,18 @@ static constexpr uint64_t DEFAULT_LIVENESS_TOLERANCE = 1000;
 
 enum class _PrivateConnectedMemoryType { Old, New };
 
-std::expected<ShmQueue *, int> try_map_memory(const int fd,
-                                              const size_t size) noexcept {
+ShmResult<ShmQueue *> try_map_memory(const int fd, const size_t size) noexcept {
   void *ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (ptr == MAP_FAILED) {
     int last_os_error = errno;
     close(fd);
-    return std::unexpected(last_os_error);
+    return std::unexpected(ShmError(ErrorCode::InternalOsError, last_os_error));
   }
 
   return static_cast<ShmQueue *>(ptr);
 }
 
-std::expected<std::tuple<_PrivateConnectedMemoryType, int>, int>
+ShmResult<std::tuple<_PrivateConnectedMemoryType, int>>
 try_init_shared_memory(const std::string &name, std::size_t size) noexcept {
   int memory_fd = shm_open(name.c_str(), O_RDWR | O_EXCL | O_CREAT, 0600);
   if (memory_fd < 0) {
@@ -38,15 +38,15 @@ try_init_shared_memory(const std::string &name, std::size_t size) noexcept {
     if (last_os_error == EEXIST) {
       memory_fd = shm_open(name.c_str(), O_RDWR, 0);
       if (memory_fd < 0)
-        return std::unexpected(memory_fd);
+        return std::unexpected(ShmError(ErrorCode::InternalOsError, errno));
       return std::tuple(_PrivateConnectedMemoryType::Old, memory_fd);
     }
-    return std::unexpected(last_os_error);
+    return std::unexpected(ShmError(ErrorCode::InternalOsError, last_os_error));
   }
 
   int trunc_res = ftruncate(memory_fd, size);
   if (trunc_res < 0) {
-    return std::unexpected(trunc_res);
+    return std::unexpected(ShmError(ErrorCode::InternalOsError, errno));
   }
   return std::tuple(_PrivateConnectedMemoryType::New, memory_fd);
 }
@@ -55,7 +55,7 @@ static inline size_t align_ptr_up(size_t ptr, size_t align) {
   return ((ptr + align - 1) & ~(align - 1));
 }
 
-std::expected<ShmQueue *, int>
+ShmResult<ShmQueue *>
 try_setup_new_memory(ShmQueue *queue, const size_t size,
                      const uint64_t num_slots, const uint64_t magic_number,
                      const uint64_t version, const size_t slot_align,
@@ -80,7 +80,7 @@ try_setup_new_memory(ShmQueue *queue, const size_t size,
   return queue;
 }
 
-std::expected<ShmQueue *, int>
+ShmResult<ShmQueue *>
 try_setup_old_memory(ShmQueue *queue, const size_t size,
                      const uint64_t num_slots, const uint64_t magic_number,
                      const uint64_t version, const uint64_t liveness_tolerance,
@@ -90,15 +90,16 @@ try_setup_old_memory(ShmQueue *queue, const size_t size,
   if (state == QueueState::Ready || state == QueueState::Starting ||
       state == QueueState::ShuttingDown) {
     if (queue->producer_heartbeat.is_alive(now_timestamp, liveness_tolerance))
-      return std::unexpected(0); // queue already acquired
+      return std::unexpected(ShmError(ErrorCode::QueueAlreadyAcquired,
+                                      queue->producer_heartbeat.get_pid()));
     if (queue->header.magic != magic_number)
-      return std::unexpected(0); // queue corrupted
+      return std::unexpected(ShmError(ErrorCode::MagicMismatch, queue->header.magic));
     if (queue->header.version != version)
-      return std::unexpected(0); // version mismatch
+      return std::unexpected(ShmError(ErrorCode::VersionMismatch, queue->header.version));
     if (queue->header.num_slots != num_slots)
-      return std::unexpected(0); // queue corrupted
+      return std::unexpected(ShmError(ErrorCode::CorruptedQueue));
   } else if (state == QueueState::Invalid)
-    return std::unexpected(0); // queue is in invalid state
+    return std::unexpected(ShmError(ErrorCode::CorruptedQueue));
 
   new (&queue->producer_heartbeat) ProducerHeartbeat(getpid(), now_timestamp);
 
@@ -118,13 +119,13 @@ template <typename T> class Producer {
         write_handle_(std::move(write_handle)) {};
 
 public:
-  static std::expected<Producer, int>
+  static ShmResult<Producer>
   create(std::string name, std::size_t num_slots, std::uint64_t magic,
          std::uint64_t version, std::uint64_t liveness_tolerance,
          std::uint64_t now_timestamp) noexcept {
     const std::size_t final_queue_size =
         sizeof(ShmQueue) + sizeof(Slot<T>) * num_slots + alignof(Slot<T>) - 1;
-    std::expected<std::tuple<_PrivateConnectedMemoryType, int>, int>
+    ShmResult<std::tuple<_PrivateConnectedMemoryType, int>>
         init_result = try_init_shared_memory(name, final_queue_size);
 
     if (!init_result.has_value())
@@ -154,20 +155,14 @@ public:
   }
 
   void update_heartbeat(std::uint64_t now) noexcept {
-    reinterpret_cast<ShmQueue*>(mmap_ptr_)->producer_heartbeat.update(now);
+    reinterpret_cast<ShmQueue *>(mmap_ptr_)->producer_heartbeat.update(now);
   }
 
-  T* get_next_slot() noexcept {
-    return write_handle_.get_next_buffer();
-  }
+  T *get_next_slot() noexcept { return write_handle_.get_next_buffer(); }
 
-  void commit_next_slot() noexcept {
-    write_handle_.commit_next_slot();
-  }
+  void commit_next_slot() noexcept { write_handle_.commit_next_slot(); }
 
-  void write(const T data) noexcept {
-    write_handle_.write_value(data);
-  }
+  void write(const T data) noexcept { write_handle_.write_value(data); }
 
   ~Producer() {
     munmap(mmap_ptr_, mmap_size_);
@@ -200,8 +195,8 @@ public:
   };
 
   template <typename T>
-  std::expected<Producer<T>, int> build(std::uint64_t now_timestamp) noexcept {
+  ShmResult<Producer<T>> build(std::uint64_t now_timestamp) noexcept {
     return Producer<T>::create(std::move(name_), num_slots_, magic_, version_,
-                       liveness_tolerance_, now_timestamp);
+                               liveness_tolerance_, now_timestamp);
   };
 };

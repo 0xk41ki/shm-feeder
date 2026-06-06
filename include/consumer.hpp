@@ -1,5 +1,6 @@
 #pragma once
 
+#include "errors.hpp"
 #include "sys/mman.h"
 #include "unistd.h"
 #include <atomic>
@@ -16,29 +17,29 @@
 
 static constexpr uint64_t DEFAULT_LIVENESS_TOLERANCE = 1000;
 
-std::expected<ShmQueue *, int> try_map_memory(const int fd,
+ShmResult<ShmQueue *> try_map_memory(const int fd,
                                               const size_t size) noexcept {
   void *ptr = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
   if (ptr == MAP_FAILED) {
     int last_os_error = errno;
     close(fd);
-    return std::unexpected(last_os_error);
+    return std::unexpected(ShmError(ErrorCode::InternalOsError, last_os_error));
   }
 
   return static_cast<ShmQueue *>(ptr);
 }
 
-std::expected<int, int>
+ShmResult<int>
 try_attach_shared_memory(const std::string &name) noexcept {
   int memory_fd = shm_open(name.c_str(), O_RDONLY, 0);
   if (memory_fd < 0) {
-    return std::unexpected(errno);
+    return std::unexpected(ShmError(ErrorCode::InternalOsError, errno));
   }
 
   return memory_fd;
 }
 
-std::expected<ShmQueue *, int>
+ShmResult<ShmQueue *>
 try_verify_memory(ShmQueue *queue, const uint64_t magic_number,
                   const uint64_t version, const uint64_t liveness_tolerance,
                   const uint64_t now_timestamp) noexcept {
@@ -46,13 +47,13 @@ try_verify_memory(ShmQueue *queue, const uint64_t magic_number,
   int state = queue->header.queue_state.load(std::memory_order_acquire);
   if (state == QueueState::Ready) {
     if (!queue->producer_heartbeat.is_alive(now_timestamp, liveness_tolerance))
-      return std::unexpected(0); // producer dead
+      return std::unexpected(ShmError(ErrorCode::ProducerDead, queue->producer_heartbeat.get_pid()));
     if (queue->header.magic != magic_number)
-      return std::unexpected(0); // queue corrupted
+      return std::unexpected(ShmError(ErrorCode::MagicMismatch, queue->header.magic));
     if (queue->header.version != version)
-      return std::unexpected(0); // version mismatch
+      return std::unexpected(ShmError(ErrorCode::VersionMismatch, queue->header.version));
   } else
-    return std::unexpected(0); // queue is in invalid state
+    return std::unexpected(ShmError(ErrorCode::CorruptedQueue));
 
   return queue;
 }
@@ -71,11 +72,11 @@ template <typename T> class Consumer {
         read_handle_(std::move(read_handle)) {};
 
 public:
-  static std::expected<Consumer, int>
+  static ShmResult<Consumer>
   create(std::string name, std::uint64_t magic, std::uint64_t version,
          std::uint64_t liveness_tolerance,
          std::uint64_t now_timestamp) noexcept {
-    std::expected<int, int> attach_result = try_attach_shared_memory(name);
+    ShmResult<int> attach_result = try_attach_shared_memory(name);
 
     if (!attach_result.has_value())
       return std::unexpected(attach_result.error());
@@ -87,12 +88,12 @@ public:
           return try_verify_memory(queue, magic, version, liveness_tolerance,
                                    now_timestamp);
         })
-        .and_then([&](ShmQueue *queue) -> std::expected<ShmQueue *, int> {
+        .and_then([&](ShmQueue *queue) -> ShmResult<ShmQueue *> {
           std::size_t final_size = sizeof(Slot<T>) * queue->header.num_slots +
                                    queue->header.data_offset;
           int res = munmap(static_cast<void *>(queue), sizeof(ShmQueue));
           if (res < 0)
-            return std::unexpected(errno);
+            return std::unexpected(ShmError(ErrorCode::InternalOsError, errno));
           return try_map_memory(fd, final_size);
         })
         .transform([&](ShmQueue *queue) {
@@ -166,7 +167,7 @@ public:
   };
 
   template <typename T>
-  std::expected<Consumer<T>, int> build(std::uint64_t now_timestamp) noexcept {
+  ShmResult<Consumer<T>> build(std::uint64_t now_timestamp) noexcept {
     return Consumer<T>::create(std::move(name_), magic_, version_,
                                liveness_tolerance_, now_timestamp);
   };
