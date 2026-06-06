@@ -17,11 +17,11 @@
 
 static constexpr uint64_t DEFAULT_LIVENESS_TOLERANCE = 1000;
 
-ShmResult<ShmQueue *> try_map_memory(const int fd,
-                                              const size_t size) noexcept {
+ShmResult<ShmQueue *> static try_map_memory(const int fd,
+                                            const size_t size) noexcept {
   void *ptr = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
   if (ptr == MAP_FAILED) {
-    int last_os_error = errno;
+    std::uint64_t last_os_error = static_cast<std::uint64_t>(errno);
     close(fd);
     return std::unexpected(ShmError(ErrorCode::InternalOsError, last_os_error));
   }
@@ -29,29 +29,31 @@ ShmResult<ShmQueue *> try_map_memory(const int fd,
   return static_cast<ShmQueue *>(ptr);
 }
 
-ShmResult<int>
-try_attach_shared_memory(const std::string &name) noexcept {
+ShmResult<int> static try_attach_shared_memory(
+    const std::string &name) noexcept {
   int memory_fd = shm_open(name.c_str(), O_RDONLY, 0);
   if (memory_fd < 0) {
-    return std::unexpected(ShmError(ErrorCode::InternalOsError, errno));
+    return std::unexpected(ShmError(ErrorCode::InternalOsError, static_cast<std::uint64_t>(errno)));
   }
 
   return memory_fd;
 }
 
-ShmResult<ShmQueue *>
-try_verify_memory(ShmQueue *queue, const uint64_t magic_number,
-                  const uint64_t version, const uint64_t liveness_tolerance,
-                  const uint64_t now_timestamp) noexcept {
+ShmResult<ShmQueue *> static try_verify_memory(
+    ShmQueue *queue, const uint64_t magic_number, const uint64_t version,
+    const uint64_t liveness_tolerance, const uint64_t now_timestamp) noexcept {
 
   int state = queue->header.queue_state.load(std::memory_order_acquire);
   if (state == QueueState::Ready) {
     if (!queue->producer_heartbeat.is_alive(now_timestamp, liveness_tolerance))
-      return std::unexpected(ShmError(ErrorCode::ProducerDead, queue->producer_heartbeat.get_pid()));
+      return std::unexpected(ShmError(ErrorCode::ProducerDead,
+                                      static_cast<std::uint64_t>(queue->producer_heartbeat.get_pid())));
     if (queue->header.magic != magic_number)
-      return std::unexpected(ShmError(ErrorCode::MagicMismatch, queue->header.magic));
+      return std::unexpected(
+          ShmError(ErrorCode::MagicMismatch, queue->header.magic));
     if (queue->header.version != version)
-      return std::unexpected(ShmError(ErrorCode::VersionMismatch, queue->header.version));
+      return std::unexpected(
+          ShmError(ErrorCode::VersionMismatch, queue->header.version));
   } else
     return std::unexpected(ShmError(ErrorCode::CorruptedQueue));
 
@@ -72,10 +74,10 @@ template <typename T> class Consumer {
         read_handle_(std::move(read_handle)) {};
 
 public:
-  static ShmResult<Consumer>
-  create(std::string name, std::uint64_t magic, std::uint64_t version,
-         std::uint64_t liveness_tolerance,
-         std::uint64_t now_timestamp) noexcept {
+  static ShmResult<Consumer> create(std::string name, std::uint64_t magic,
+                                    std::uint64_t version,
+                                    std::uint64_t liveness_tolerance,
+                                    std::uint64_t now_timestamp) noexcept {
     ShmResult<int> attach_result = try_attach_shared_memory(name);
 
     if (!attach_result.has_value())
@@ -93,7 +95,7 @@ public:
                                    queue->header.data_offset;
           int res = munmap(static_cast<void *>(queue), sizeof(ShmQueue));
           if (res < 0)
-            return std::unexpected(ShmError(ErrorCode::InternalOsError, errno));
+            return std::unexpected(ShmError(ErrorCode::InternalOsError, static_cast<std::uint64_t>(errno)));
           return try_map_memory(fd, final_size);
         })
         .transform([&](ShmQueue *queue) {

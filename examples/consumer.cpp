@@ -5,14 +5,15 @@
 #include <iostream>
 
 std::uint64_t now_ms() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
 }
 
 int main() {
-  ConsumerBuilder consumer("some_memory");
-  auto queue_result = consumer.with_magic(90)
+  auto queue_result = ConsumerBuilder("some_memory")
+                          .with_magic(90)
                           .with_version(1)
                           .with_liveness_tolerance(1000)
                           .build<std::uint64_t>(now_ms());
@@ -26,9 +27,9 @@ int main() {
   auto &queue = queue_result.value();
   std::uint64_t i = 1;
   while (true) {
-    std::uint64_t *res = queue.unsafe_try_read();
-    if (res != nullptr)
-      std::cout << "read " << *res << std::endl;
+    bool did_write = queue.try_read_into(&i);
+    if (did_write)
+      std::cout << "read " << i << std::endl;
 
     if (!queue.check_producer_liveness(now_ms())) {
       std::cout << "producer died" << std::endl;

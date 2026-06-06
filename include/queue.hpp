@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <type_traits>
 
 const unsigned long QUEUE_EMPTY_MARKER = SIZE_MAX;
@@ -31,14 +32,14 @@ public:
   };
   Queue(std::size_t len) {
     assert(((len & (len - 1)) == 0) && "Len must be a power of two");
-    slot_begin_ = (Slot<T> *)malloc(len * sizeof(Slot<T>));
+    slot_begin_ = static_cast<Slot<T> *>(::operator new(sizeof(Slot<T>) * len));
     if (slot_begin_ != nullptr) {
-      memset(slot_begin_, 0, len * sizeof(Slot<T>));
+      for(std::size_t i=0;i<len;i++) {
+        slot_begin_[i].seq.store(0, std::memory_order_relaxed);
+      }
     }
     len_mask_ = len - 1;
-    last_committed_slot_ =
-        (std::atomic<std::size_t> *)malloc(sizeof(std::atomic<std::size_t>));
-    last_committed_slot_->store(QUEUE_EMPTY_MARKER);
+    last_committed_slot_ = new std::atomic<std::size_t>(QUEUE_EMPTY_MARKER);
   };
   Slot<T> *get_slot_at(std::size_t idx) { return (slot_begin_ + idx); };
   std::size_t get_last_committed_slot() {

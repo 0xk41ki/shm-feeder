@@ -6,14 +6,14 @@
 #include <thread>
 
 std::uint64_t now_ms() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
 }
-
 int main() {
-  ProducerBuilder producer("some_memory", 16);
-  auto queue_result = producer.with_magic(90)
+  auto queue_result = ProducerBuilder("some_memory", 16)
+                          .with_magic(90)
                           .with_version(1)
                           .with_liveness_tolerance(10000)
                           .build<std::uint64_t>(now_ms());

@@ -14,22 +14,22 @@ enum class ErrorCode {
   InternalOsError
 };
 
-constexpr int NO_DATA_MARKER = INT32_MIN;
+constexpr unsigned long NO_DATA_MARKER = UINT64_MAX;
 
 class ShmError {
   ErrorCode code_;
   // optional data
-  int data_;
+  unsigned long data_;
 
 public:
   explicit ShmError(ErrorCode code) noexcept : code_(code), data_(NO_DATA_MARKER) {};
-  ShmError(ErrorCode code, int data) noexcept : code_(code), data_(data) {};
+  ShmError(ErrorCode code, unsigned long data) noexcept : code_(code), data_(data) {};
 
   ErrorCode code() const noexcept { return code_; }
 
   bool has_data() const noexcept { return data_ != NO_DATA_MARKER; }
 
-  int data() const noexcept { return data_; }
+  unsigned long data() const noexcept { return data_; }
 };
 
 template<typename T> using ShmResult = std::expected<T, ShmError>;

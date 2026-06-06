@@ -19,10 +19,11 @@ static constexpr uint64_t DEFAULT_LIVENESS_TOLERANCE = 1000;
 
 enum class _PrivateConnectedMemoryType { Old, New };
 
-ShmResult<ShmQueue *> try_map_memory(const int fd, const size_t size) noexcept {
+ShmResult<ShmQueue *> static try_map_memory(const int fd,
+                                            const size_t size) noexcept {
   void *ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (ptr == MAP_FAILED) {
-    int last_os_error = errno;
+    std::uint64_t last_os_error = static_cast<std::uint64_t>(errno);
     close(fd);
     return std::unexpected(ShmError(ErrorCode::InternalOsError, last_os_error));
   }
@@ -30,23 +31,25 @@ ShmResult<ShmQueue *> try_map_memory(const int fd, const size_t size) noexcept {
   return static_cast<ShmQueue *>(ptr);
 }
 
-ShmResult<std::tuple<_PrivateConnectedMemoryType, int>>
-try_init_shared_memory(const std::string &name, std::size_t size) noexcept {
+ShmResult<
+    std::tuple<_PrivateConnectedMemoryType,
+               int>> static try_init_shared_memory(const std::string &name,
+                                                   std::size_t size) noexcept {
   int memory_fd = shm_open(name.c_str(), O_RDWR | O_EXCL | O_CREAT, 0600);
   if (memory_fd < 0) {
-    int last_os_error = errno;
+    std::uint64_t last_os_error = static_cast<std::uint64_t>(errno);
     if (last_os_error == EEXIST) {
       memory_fd = shm_open(name.c_str(), O_RDWR, 0);
       if (memory_fd < 0)
-        return std::unexpected(ShmError(ErrorCode::InternalOsError, errno));
+        return std::unexpected(ShmError(ErrorCode::InternalOsError, static_cast<std::uint64_t>(errno)));
       return std::tuple(_PrivateConnectedMemoryType::Old, memory_fd);
     }
     return std::unexpected(ShmError(ErrorCode::InternalOsError, last_os_error));
   }
 
-  int trunc_res = ftruncate(memory_fd, size);
+  int trunc_res = ftruncate(memory_fd, static_cast<long>(size));
   if (trunc_res < 0) {
-    return std::unexpected(ShmError(ErrorCode::InternalOsError, errno));
+    return std::unexpected(ShmError(ErrorCode::InternalOsError, static_cast<std::uint64_t>(errno)));
   }
   return std::tuple(_PrivateConnectedMemoryType::New, memory_fd);
 }
@@ -55,11 +58,10 @@ static inline size_t align_ptr_up(size_t ptr, size_t align) {
   return ((ptr + align - 1) & ~(align - 1));
 }
 
-ShmResult<ShmQueue *>
-try_setup_new_memory(ShmQueue *queue, const size_t size,
-                     const uint64_t num_slots, const uint64_t magic_number,
-                     const uint64_t version, const size_t slot_align,
-                     const uint64_t now_timestamp) noexcept {
+ShmResult<ShmQueue *> static try_setup_new_memory(
+    ShmQueue *queue, const size_t size, const uint64_t num_slots,
+    const uint64_t magic_number, const uint64_t version,
+    const size_t slot_align, const uint64_t now_timestamp) noexcept {
   memset(reinterpret_cast<void *>(queue), 0, size);
 
   queue->header.queue_state.store(QueueState::Starting,
@@ -80,22 +82,23 @@ try_setup_new_memory(ShmQueue *queue, const size_t size,
   return queue;
 }
 
-ShmResult<ShmQueue *>
-try_setup_old_memory(ShmQueue *queue, const size_t size,
-                     const uint64_t num_slots, const uint64_t magic_number,
-                     const uint64_t version, const uint64_t liveness_tolerance,
-                     const uint64_t now_timestamp) noexcept {
+ShmResult<ShmQueue *> static try_setup_old_memory(
+    ShmQueue *queue, const uint64_t num_slots, const uint64_t magic_number,
+    const uint64_t version, const uint64_t liveness_tolerance,
+    const uint64_t now_timestamp) noexcept {
 
   int state = queue->header.queue_state.load(std::memory_order_acquire);
   if (state == QueueState::Ready || state == QueueState::Starting ||
       state == QueueState::ShuttingDown) {
     if (queue->producer_heartbeat.is_alive(now_timestamp, liveness_tolerance))
       return std::unexpected(ShmError(ErrorCode::QueueAlreadyAcquired,
-                                      queue->producer_heartbeat.get_pid()));
+                                      static_cast<std::uint64_t>(queue->producer_heartbeat.get_pid())));
     if (queue->header.magic != magic_number)
-      return std::unexpected(ShmError(ErrorCode::MagicMismatch, queue->header.magic));
+      return std::unexpected(
+          ShmError(ErrorCode::MagicMismatch, queue->header.magic));
     if (queue->header.version != version)
-      return std::unexpected(ShmError(ErrorCode::VersionMismatch, queue->header.version));
+      return std::unexpected(
+          ShmError(ErrorCode::VersionMismatch, queue->header.version));
     if (queue->header.num_slots != num_slots)
       return std::unexpected(ShmError(ErrorCode::CorruptedQueue));
   } else if (state == QueueState::Invalid)
@@ -119,14 +122,14 @@ template <typename T> class Producer {
         write_handle_(std::move(write_handle)) {};
 
 public:
-  static ShmResult<Producer>
-  create(std::string name, std::size_t num_slots, std::uint64_t magic,
-         std::uint64_t version, std::uint64_t liveness_tolerance,
-         std::uint64_t now_timestamp) noexcept {
+  static ShmResult<Producer> create(std::string name, std::size_t num_slots,
+                                    std::uint64_t magic, std::uint64_t version,
+                                    std::uint64_t liveness_tolerance,
+                                    std::uint64_t now_timestamp) noexcept {
     const std::size_t final_queue_size =
         sizeof(ShmQueue) + sizeof(Slot<T>) * num_slots + alignof(Slot<T>) - 1;
-    ShmResult<std::tuple<_PrivateConnectedMemoryType, int>>
-        init_result = try_init_shared_memory(name, final_queue_size);
+    ShmResult<std::tuple<_PrivateConnectedMemoryType, int>> init_result =
+        try_init_shared_memory(name, final_queue_size);
 
     if (!init_result.has_value())
       return std::unexpected(init_result.error());
@@ -139,9 +142,8 @@ public:
             return try_setup_new_memory(queue, final_queue_size, num_slots,
                                         magic, version, alignof(Slot<T>),
                                         now_timestamp);
-          return try_setup_old_memory(queue, final_queue_size, num_slots, magic,
-                                      version, liveness_tolerance,
-                                      now_timestamp);
+          return try_setup_old_memory(queue, num_slots, magic, version,
+                                      liveness_tolerance, now_timestamp);
         })
         .transform([&](ShmQueue *queue) {
           Slot<T> *data_begin = reinterpret_cast<Slot<T> *>(
